@@ -1,0 +1,25 @@
+name:                animation-dsl-examples
+version:             0.1.0.0
+-- synopsis:
+-- description:
+homepage:            https://github.com/rubenpieters/animation-dsl-examples#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Ruben Pieters
+maintainer:          rubenpietersgithub@gmail.com
+copyright:           2019 Ruben Pieters
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.10
+extra-source-files:  README.md
+
+executable animation-dsl
+  hs-source-dirs:      src
+  main-is:             Main.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5
+                     , containers
+                     , gloss
+                     , gloss-juicy
+                     , microlens
+                     , microlens-th
