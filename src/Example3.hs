@@ -14,14 +14,16 @@ import Control.Monad.State.Lazy
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.List (find, findIndex)
+import Data.List (find, findIndex, repeat)
+
+import System.Random
 
 import Lens.Micro
 import Lens.Micro.TH
 import Lens.Micro.Mtl
 
-import Graphics.Gloss hiding (scale)
-import Graphics.Gloss.Interface.Pure.Game hiding (scale)
+import Graphics.Gloss hiding (scale, color)
+import Graphics.Gloss.Interface.Pure.Game hiding (scale, color)
 
 import Debug.Trace
 
@@ -165,6 +167,9 @@ cleanAnims l = let
 trianglePic :: Picture
 trianglePic = lineLoop [(0, 1), (1, -1), (-1, -1)]
 
+hexagonPic :: Picture
+hexagonPic = lineLoop [(2, 3.5), (4, 0), (2, -3.5), (-2, -3.5), (-4, 0), (-2, 3.5)]
+
 circlePic :: Picture
 circlePic = ThickCircle 0.3 15
 
@@ -179,7 +184,7 @@ bombPic = Circle 1
 
 barPic :: Float -> Picture
 barPic w = let
-  w' = w / 5
+  w' = w / 50
   in Polygon [(0, 0), (w', 0), (w', 1), (0, 1), (0, 0)]
 
 -- World Definition
@@ -201,7 +206,8 @@ makeLenses ''Sprite
 data Player
   = Player
   { _playerSprite :: Sprite
-  , _playerHitbox :: Sprite
+  , _playerIndicators :: [Sprite]
+  , _playerHp :: Float
   , _shootCD :: Float
   , _bombCD :: Float
   , _hitCD :: Float
@@ -212,6 +218,9 @@ makeLenses ''Player
 data Enemy
   = Enemy
   { _enemySprite :: Sprite
+  , _enemyPartTriangle1 :: Sprite
+  , _enemyPartTriangle2 :: Sprite
+  , _enemyPartCannon1 :: Sprite
   , _enemyHpBar :: Sprite
   , _enemyHp :: Float
   }
@@ -248,8 +257,11 @@ allSprites w =
   map _bulletSprite (w ^. bullets) ++
   map _bulletSprite (w ^. enemyBullets) ++
   [w ^. enemy . enemySprite] ++
+  [w ^. enemy . enemyPartTriangle1] ++
+  [w ^. enemy . enemyPartTriangle2] ++
+  [w ^. enemy . enemyPartCannon1] ++
   [w ^. player . playerSprite] ++
-  [w ^. player . playerHitbox] ++
+  w ^. player . playerIndicators ++
   w ^. particles ++
   [w ^. enemy . enemyHpBar]
 
@@ -294,7 +306,7 @@ deleteBomb id w@(World {_particles}) = let
 createParticle :: (Float, Float) -> World -> (World, Int)
 createParticle (x, y) w@(World {_particles, _nextParticleId}) = let
   newIndex = w ^. nextParticleId
-  particle = Sprite x y 1 (1, 1, 1) 1 0 bombPic newIndex
+  particle = Sprite x y 1 (1, 1, 1) 3 0 bombPic newIndex
   newWorld = w { _particles = particle : _particles, _nextParticleId = _nextParticleId + 1 }
   in (newWorld, newIndex)
 
@@ -302,6 +314,13 @@ deleteParticle :: Int -> World -> World
 deleteParticle id w@(World {_particles}) = let
   newWorld = w { _particles = filter (\x -> x ^. spriteId /= id) _particles }
   in newWorld
+
+createHpBarParticle :: (Float, Float) -> World -> (World, Int)
+createHpBarParticle (x, y) w@(World {_particles, _nextParticleId}) = let
+  newIndex = w ^. nextParticleId
+  particle = Sprite x y 1 (1, 0, 0) 1 0 (circleSolid 4) newIndex
+  newWorld = w { _particles = particle : _particles, _nextParticleId = _nextParticleId + 1 }
+  in (newWorld, newIndex)
 
 createEnBullet1 :: (Float, Float) -> (Float, Float) -> World -> (World, Int)
 createEnBullet1 (x, y) dir w@(World {_enemyBullets}) = let
@@ -327,58 +346,143 @@ enemyHitParticleAnim pos@(paX, paY) = let
 
 enemyHitAnim :: Dsl (Ops World) ()
 enemyHitAnim = seq
-  [ basic (For 0.005) (enemy . enemySprite . alpha) (To 0.7)
-  , basic (For 0.002) (enemy . enemySprite . alpha) (To 1)
+  [ basic (For 0.05) (enemy . enemySprite . alpha) (To 0.3)
+  , basic (For 0.02) (enemy . enemySprite . alpha) (To 1)
   ]
+
+enemyHpBarParticle :: Dsl (Ops World) ()
+enemyHpBarParticle = let
+  createParticle offY = do
+    hp <- dslGet (enemy . enemyHp)
+    let xLoc = (-100) + (hp / 5)
+    i <- create (createHpBarParticle (xLoc, 156 + offY))
+    par
+      [ basic (For 0.3) (particles . paId i . x) (To (xLoc + 15))
+      , basic (For 0.3) (particles . paId i . alpha) (To 0.3)
+      , basic (For 0.3) (particles . paId i . scale) (To 0.5)
+      ]
+    delete deleteParticle i
+    in seq (map createParticle [1, 7, 4])
 
 playerHitAnim :: Dsl (Ops World) ()
 playerHitAnim = seq
-  [ basic (For 0.5) (player . playerHitbox . alpha) (To 0)
-  , basic (For 0.5) (player . playerHitbox . alpha) (To 1)
-  , basic (For 0.5) (player . playerHitbox . alpha) (To 0)
-  , basic (For 0.5) (player . playerHitbox . alpha) (To 1)
-  , basic (For 0.25) (player . playerHitbox . alpha) (To 0)
-  , basic (For 0.25) (player . playerHitbox . alpha) (To 1)
-  , basic (For 0.25) (player . playerHitbox . alpha) (To 0)
-  , basic (For 0.25) (player . playerHitbox . alpha) (To 1)
+  [ basic (For 0.5) (player . playerSprite . alpha) (To 0.15)
+  , basic (For 0.5) (player . playerSprite . alpha) (To 1)
+  , basic (For 0.5) (player . playerSprite . alpha) (To 0.15)
+  , basic (For 0.5) (player . playerSprite . alpha) (To 1)
+  , basic (For 0.25) (player . playerSprite . alpha) (To 0.15)
+  , basic (For 0.25) (player . playerSprite . alpha) (To 1)
+  , basic (For 0.25) (player . playerSprite . alpha) (To 0.15)
+  , basic (For 0.25) (player . playerSprite . alpha) (To 1)
   ]
+
+playerPulse :: Dsl (Ops World) ()
+playerPulse = do
+  hp <- dslGet (player . playerHp)
+  seq
+    [ basic (For 0.4) (player . playerIndicators . atIndex 0 . scale) (To 15)
+    , if hp > 1
+        then basic (For 0.4) (player . playerIndicators . atIndex 1 . scale) (To 15)
+        -- else noop
+        else basic (For 0.4) (player . playerIndicators . atIndex 0 . scale) (To 15)
+    , if hp > 2
+        then basic (For 0.4) (player . playerIndicators . atIndex 2 . scale) (To 15)
+        -- else noop
+        else basic (For 0.4) (player . playerIndicators . atIndex 0 . scale) (To 15)
+    , par
+        [ basic (For 0.2) (player . playerIndicators . atIndex 0 . alpha) (To 0)
+        , basic (For 0.2) (player . playerIndicators . atIndex 1 . alpha) (To 0)
+        , basic (For 0.2) (player . playerIndicators . atIndex 2 . alpha) (To 0)
+        ]
+    , par
+        [ basic (For 0) (player . playerIndicators . atIndex 0 . scale) (To 0)
+        , basic (For 0) (player . playerIndicators . atIndex 1 . scale) (To 0)
+        , basic (For 0) (player . playerIndicators . atIndex 2 . scale) (To 0)
+        , basic (For 0) (player . playerIndicators . atIndex 0 . alpha) (To 1)
+        , basic (For 0) (player . playerIndicators . atIndex 1 . alpha) (To 1)
+        , basic (For 0) (player . playerIndicators . atIndex 2 . alpha) (To 1)
+        ]
+    ]
+  playerPulse
 
 playerBombAnim :: (Float, Float) -> Dsl (Ops World) ()
 playerBombAnim pos = do
   i <- create (createBomb pos)
   par
-    [ basic (For 0.2) (particles . paId i . scale) (To 10)
-    , basic (For 0.2) (particles . paId i . alpha) (To 0.5)
+    [ basic (For 0.05) (particles . paId i . scale) (To 10)
+    , basic (For 0.05) (particles . paId i . alpha) (To 0.5)
     ]
   basic (For 0.2) (particles . paId i . alpha) (To 0)
 
 enemyAnim :: Dsl (Ops World) ()
 enemyAnim = let
-  spawnBullet dir = do
+  spawnBullet (offX, offY) dir = do
     x <- dslGet (enemy . enemySprite . x)
     y <- dslGet (enemy . enemySprite . y)
-    _ <- create (createEnBullet1 (x, y) dir)
+    _ <- create (createEnBullet1 (x + offX, y + offY) dir)
     return ()
+  windup1 = par
+    [ seq
+        [ basic (For 0.5) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.5) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.5) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.25) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.25) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.25) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.125) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        , basic (For 0.125) (enemy . enemyPartCannon1 . rotation) (To 360)
+        , basic (For 0) (enemy . enemyPartCannon1 . rotation) (To 0)
+        ]
+    , seq
+        [ par
+          [ basic (For 2.5) (enemy . enemyPartCannon1 . color . _2) (To 0.5)
+          , basic (For 2.5) (enemy . enemyPartCannon1 . color . _3) (To 0.5)
+          ]
+        , par
+           [ basic (For 0) (enemy . enemyPartCannon1 . color . _2) (To 1)
+           , basic (For 0) (enemy . enemyPartCannon1 . color . _3) (To 1)
+           ]
+        ]
+    ]
   bulletPattern1 = [1..60] &
-    map (\x -> ((cos (x / 10)) / 5, ((sin (x / 10)) / 5))) &
-    map spawnBullet
+    map (\x -> (cos (x / 10) / 5, sin (x / 10) / 5)) &
+    map (spawnBullet (0, 45))
   bulletPattern2 = (reverse [1..60]) &
-    map (\x -> ((cos (x / 10)) / 5, ((sin (x / 10)) / 5))) &
-    map spawnBullet
-  repeat = seq
+    map (\x -> (cos (x / 10) / 5, sin (x / 10) / 5)) &
+    map (spawnBullet (0, 0))
+  movement = seq
     [ par $
         [ basic (For 4) (enemy . enemySprite . x) (To (150))
-        , seq bulletPattern1
+        , basic (For 4) (enemy . enemyPartTriangle1 . x) (To (150))
+        , basic (For 4) (enemy . enemyPartTriangle2 . x) (To (150))
+        , basic (For 4) (enemy . enemyPartCannon1 . x) (To (150))
         ]
     , par $
         [ basic (For 4) (enemy . enemySprite . x) (To (-150))
-        , seq bulletPattern2
+        , basic (For 4) (enemy . enemyPartTriangle1 . x) (To (-150))
+        , basic (For 4) (enemy . enemyPartTriangle2 . x) (To (-150))
+        , basic (For 4) (enemy . enemyPartCannon1 . x) (To (-150))
         ]
-    , repeat
+    , movement
     ]
-  in seq
-    [ basic (For 2) (enemy . enemySprite . x) (To (-150))
-    , repeat
+  in par
+    [ seq
+      [ par
+          [ basic (For 2) (enemy . enemySprite . x) (To (-150))
+          , basic (For 2) (enemy . enemyPartTriangle1 . x) (To (-150))
+          , basic (For 2) (enemy . enemyPartTriangle2 . x) (To (-150))
+          , basic (For 2) (enemy . enemyPartCannon1 . x) (To (-150))
+          ]
+      , movement
+      ]
+    , seq (repeat (seq (windup1 : bulletPattern1)))
     ]
 
 -- Initial Definitions
@@ -386,7 +490,11 @@ enemyAnim = let
 initialPlayer :: Player
 initialPlayer = Player
   (Sprite 0 0 1 (1, 1, 1) 10 0 trianglePic undefined)
-  (Sprite 0 0 1 (0, 0.8, 0.8) 5 0 (circleSolid 1) undefined)
+  [ Sprite 0 0 1 (0, 0.8, 0.8) 0 0 (Circle 0.5) undefined
+  , Sprite 0 0 1 (0, 0.8, 0.8) 0 0 (Circle 0.5) undefined
+  , Sprite 0 0 1 (0, 0.8, 0.8) 0 0 (Circle 0.5) undefined
+  ]
+  3
   0
   0
   0
@@ -397,12 +505,15 @@ mkEnemyHpBar w =
 
 initialEnemy :: Enemy
 initialEnemy = Enemy
-  (Sprite 0 100 1 (0.8, 0.2, 0.2) 5 0 circlePic undefined)
-  (mkEnemyHpBar 100)
-  100
+  (Sprite 0 100 1 (1, 1, 1) 45 0 (Circle 1) undefined)
+  (Sprite 0 90 1 (1, 1, 1) 40 180 trianglePic undefined)
+  (Sprite 0 110 1 (1, 1, 1) 40 0 trianglePic undefined)
+  (Sprite 0 145 1 (1, 1, 1) 3 0 hexagonPic undefined)
+  (mkEnemyHpBar 1000)
+  1000
 
 initialWorld :: World
-initialWorld = World initialPlayer [] [] initialEnemy [enemyAnim] [] Set.empty (0, 0) [] 1 []
+initialWorld = World initialPlayer [playerPulse] [] initialEnemy [enemyAnim] [] Set.empty (0, 0) [] 1 []
 
 -- Gloss Functions
 
@@ -473,25 +584,25 @@ update :: Float -> World -> World
 update t = execState $ do
   keys <- use keysDown
   -- player movement
-  if Set.member (Char 'w') keys
+  if Set.member (Char 'w') keys || Set.member (Char 'z') keys
     then do
       player . playerSprite . y %= \x -> x + playerMoveSpeed
-      player . playerHitbox . y %= \x -> x + playerMoveSpeed
+      player . playerIndicators . traverse . y %= \x -> x + playerMoveSpeed
     else return ()
-  if Set.member (Char 'a') keys
+  if Set.member (Char 'a') keys || Set.member (Char 'q') keys
     then do
       player . playerSprite . x %= \x -> x - playerMoveSpeed
-      player . playerHitbox . x %= \x -> x - playerMoveSpeed
+      player . playerIndicators . traverse . x %= \x -> x - playerMoveSpeed
     else return ()
   if Set.member (Char 's') keys
     then do
       player . playerSprite . y %= \x -> x - playerMoveSpeed
-      player . playerHitbox . y %= \x -> x - playerMoveSpeed
+      player . playerIndicators . traverse . y %= \x -> x - playerMoveSpeed
     else return ()
   if Set.member (Char 'd') keys
     then do
       player . playerSprite . x %= \x -> x + playerMoveSpeed
-      player . playerHitbox . x %= \x -> x + playerMoveSpeed
+      player . playerIndicators . traverse . x %= \x -> x + playerMoveSpeed
     else return ()
   -- player shooting
   player . shootCD %= \x -> x - 1
@@ -520,7 +631,11 @@ update t = execState $ do
       playerX <- use $ player . playerSprite . x
       playerY <- use $ player . playerSprite . y
       particleAnims %= \x -> (playerBombAnim (playerX, playerY)) : x
-      player . bombCD .= 100
+      player . bombCD .= 5000
+      -- clear bullets in radius of bomb
+      w <- get
+      let (newOps, newBullets) = clearBullets (playerX, playerY) 80 (w ^. enemyBullets)
+      put (w { _particleAnims = newOps ++ w ^. particleAnims, _enemyBullets = newBullets})
     else return ()
   -- reorient player
   modify reorient
@@ -528,17 +643,28 @@ update t = execState $ do
   w <- get
   let (newOps, newBullets) = updateBullets w (w ^. bullets)
   put (w { _particleAnims = newOps ++ w ^. particleAnims, _bullets = newBullets})
-  let hits = length newOps
-  enemy . enemyHp %= \x -> max 0 (x - fromIntegral hits)
+  let playerHits = length newOps
+  enemy . enemyHp %= \x -> max 0 (x - fromIntegral playerHits)
   enHp <- use $ enemy . enemyHp
   enemy . enemyHpBar .= mkEnemyHpBar enHp
-  if hits > 0
+  if playerHits > 0
     then enemyAnims %= \x -> enemyHitAnim : x
     else return ()
   -- update enemy bullets
   w <- get
   let (newOps, newBullets) = updateEnBullets w (w ^. enemyBullets)
   put (w { _playerAnims = newOps ++ w ^. playerAnims, _enemyBullets = newBullets})
+  let enemyHits = length newOps
+  if enemyHits > 0
+    then do
+      player . playerHp %= \x -> x - 1
+      -- clear bullets when player is hit
+      w <- get
+      playerX <- use $ player . playerSprite . x
+      playerY <- use $ player . playerSprite . y
+      let (newOps, newBullets) = clearBullets (playerX, playerY) 80 (w ^. enemyBullets)
+      put (w { _particleAnims = playerBombAnim (playerX, playerY) : newOps ++ w ^. particleAnims, _enemyBullets = newBullets})
+    else return ()
   -- update player animations
   runAnim playerAnims t
   -- update enemy animations
@@ -566,7 +692,7 @@ updateBullets w (bullet:r) = let
   in if outsideBounds newBullet
        then (newAnims, newList)
        else if overlapEn newBullet en
-              then (enemyHitParticleAnim (bX, bY) : newAnims, newList)
+              then (enemyHitParticleAnim (bX, bY) : enemyHpBarParticle : newAnims, newList)
               else (newAnims, newBullet : newList)
 
 updateEnBullets :: World -> [Bullet] -> ([Dsl (Ops World) ()], [Bullet])
@@ -588,6 +714,17 @@ updateBullet bullet = let
   (dirX, dirY) = bullet ^. bulletDirection
   in bullet & bulletSprite . x %~ (\x -> x + bulletSpeed * dirX)
             & bulletSprite . y %~ (\x -> x + bulletSpeed * dirY)
+
+clearBullets :: (Float, Float) -> Float -> [Bullet] -> ([Dsl (Ops World) ()], [Bullet])
+clearBullets center@(cX, cY) radius [] = ([], [])
+clearBullets center@(cX, cY) radius (bullet:r) = let
+  bX = bullet ^. bulletSprite . x
+  bY = bullet ^. bulletSprite . y
+  dist = sqrt ((bX - cX) * (bX - cX) + (bY - cY) * (bY - cY))
+  (newAnims, newList) = clearBullets center radius r
+  in if dist <= radius
+       then (enemyHitParticleAnim (bX, bY) : newAnims, newList)
+       else (newAnims, bullet : newList)
 
 main :: IO ()
 main = let
