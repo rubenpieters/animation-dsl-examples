@@ -14,7 +14,7 @@ import Control.Monad.State.Lazy
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.List (find, findIndex, repeat)
+import Data.List (find, findIndex, repeat, scanl')
 
 import System.Random
 
@@ -177,7 +177,10 @@ particlePic :: Picture
 particlePic = Circle 5
 
 bulletPic :: Picture
-bulletPic = circleSolid 1.5
+bulletPic = Pictures
+  [ Circle 1.4
+  , circleSolid 0.6
+  ]
 
 bombPic :: Picture
 bombPic = Circle 1
@@ -186,6 +189,9 @@ barPic :: Float -> Picture
 barPic w = let
   w' = w / 50
   in Polygon [(0, 0), (w', 0), (w', 1), (0, 1), (0, 0)]
+
+textBox :: Picture
+textBox = lineLoop [(-150, 30), (150, 30), (150, -30), (-150, -30)]
 
 -- World Definition
 
@@ -248,6 +254,9 @@ data World
   , _particles :: [Sprite]
   , _nextParticleId :: Int
   , _particleAnims :: [Dsl (Ops World) ()]
+  , _introSprites :: [Sprite]
+  , _nextIntroSpriteId :: Int
+  , _introAnims :: [Dsl (Ops World) ()]
   , _introVisible :: Bool
   , _gameVisible :: Bool
   }
@@ -280,6 +289,53 @@ paId i = let
 
 -- Config
 
+createTextBox :: (Float, Float) -> World -> (World, Int)
+createTextBox (x, y) w@(World {_introSprites, _nextIntroSpriteId}) = let
+  newIndex = w ^. nextIntroSpriteId
+  sprite = Sprite x y 0 (1, 1, 1) 1 0 textBox newIndex
+  newWorld = w { _introSprites = sprite : _introSprites, _nextIntroSpriteId = _nextIntroSpriteId + 1 }
+  in (newWorld, newIndex)
+
+deleteIntroSprite :: Int -> World -> World
+deleteIntroSprite id w@(World {_introSprites}) = let
+  newWorld = w { _introSprites = filter (\x -> x ^. spriteId /= id) _introSprites }
+  in newWorld
+
+createText :: (Float, Float) -> String -> World -> (World, Int)
+createText (x, y) text w@(World {_introSprites, _nextIntroSpriteId}) = let
+  newIndex = w ^. nextIntroSpriteId
+  sprite = Sprite x y 1 (1, 1, 1) 0.22 0 (Text text) newIndex
+  newWorld = w { _introSprites = sprite : _introSprites, _nextIntroSpriteId = _nextIntroSpriteId + 1 }
+  in (newWorld, newIndex)
+
+fillTextBox :: Float -> String -> Dsl (Ops World) ()
+fillTextBox offY text = let
+  subTexts = init (drop 1 (scanl' (\acc n -> acc ++ [n]) "" text))
+  f t = do
+    i <- create (createText (-140, offY - 30) t)
+    basic (For 0.05) (player . shootCD) (To 0)
+  in do
+    seq (subTexts & map f)
+    i <- create (createText (-140, offY - 30) text)
+    return ()
+
+introTextAnim :: Dsl (Ops World) ()
+introTextAnim = let
+  mkBox (offY, text) = do
+    i <- create (createTextBox (0, offY))
+    par
+      [ basic (For 0.1) (introSprites . paId i . y) (To (offY - 20))
+      , basic (For 0.1) (introSprites . paId i . alpha) (To 1)
+      ]
+    fillTextBox offY text
+  boxes =
+    [ (175, "WASD to move")
+    , (75, "SPACE to shoot")
+    , (-25, "E to bomb")
+    , (-125, "S to start")
+    ]
+  in seq (boxes & map mkBox)
+
 playerMoveSpeed :: Float
 playerMoveSpeed = 2
 
@@ -288,7 +344,7 @@ bulletSpeed = 6
 
 mkBullet :: Float -> Float -> (Float, Float) -> Bullet
 mkBullet x y dir = Bullet
-  (Sprite x y 1 (0.2, 0.3, 0.85) 4 0 bulletPic undefined)
+  (Sprite x y 1 (1, 1, 1) 4 0 bulletPic undefined)
   dir
 
 createBomb :: (Float, Float) -> World -> (World, Int)
@@ -322,10 +378,10 @@ createHpBarParticle (x, y) w@(World {_particles, _nextParticleId}) = let
   newWorld = w { _particles = particle : _particles, _nextParticleId = _nextParticleId + 1 }
   in (newWorld, newIndex)
 
-createEnBullet1 :: (Float, Float) -> (Float, Float) -> World -> (World, Int)
-createEnBullet1 (x, y) dir w@(World {_enemyBullets}) = let
+createEnBullet :: (Float, Float) -> (Float, Float) -> (Float, Float, Float) -> World -> (World, Int)
+createEnBullet (x, y) dir color w@(World {_enemyBullets}) = let
   bullet = Bullet
-    (Sprite x y 1 (0.8, 0.1, 0.75) 3 0 bulletPic undefined)
+    (Sprite x y 1 color 3 0 bulletPic undefined)
     dir
   newWorld = w { _enemyBullets = bullet : _enemyBullets }
   in (newWorld, undefined)
@@ -448,10 +504,10 @@ enemyAnim = let
         ]
     , movement
     ]
-  spawnBullet (offX, offY) dir = do
+  spawnBullet (offX, offY) color dir = do
     x <- dslGet (enemy . enemySprite . x)
     y <- dslGet (enemy . enemySprite . y)
-    _ <- create (createEnBullet1 (x + offX, y + offY) dir)
+    _ <- create (createEnBullet (x + offX, y + offY) dir color)
     return ()
   windup :: Lens' Enemy Sprite -> Dsl (Ops World) ()
   windup cannon = par
@@ -484,17 +540,23 @@ enemyAnim = let
            ]
         ]
     ]
-  bulletPattern offset = [1..60] &
+  bulletPattern offset color = [1..60] &
     map (\x -> (cos (x / 10) / 5, sin (x / 10) / 5)) &
-    map (spawnBullet offset)
+    map (spawnBullet offset color)
   offset 0 = (0, 45)
   offset 1 = (39, 22)
   offset 2 = (39, -22)
   offset 3 = (0, -45)
   offset 4 = (-39, -22)
   offset 5 = (-39, 22)
+  colorI 0 = (0.8, 0.1, 0.7)
+  colorI 1 = (0.2, 0.2, 0.9)
+  colorI 2 = (0.4, 0.7, 0.2)
+  colorI 3 = (0.9, 0.3, 0.1)
+  colorI 4 = (0.3, 0.7, 0.5)
+  colorI 5 = (0.6, 0.8, 0.2)
   sequence l = let
-    f i = seq $ windup (enemyPartCannon . atIndex i) : bulletPattern (offset i)
+    f i = seq $ windup (enemyPartCannon . atIndex i) : bulletPattern (offset i) (colorI i)
     in do
          enHp <- dslGet (enemy . enemyHp)
          let amt = ceiling (6 - (enHp * 6 / 1000))
@@ -553,7 +615,7 @@ initialEnemy = Enemy
   1000
 
 initialWorld :: World
-initialWorld = World initialPlayer [playerPulse] [] initialEnemy [enemyAnim] [] Set.empty (0, 0) [] 1 []
+initialWorld = World initialPlayer [playerPulse] [] initialEnemy [enemyAnim] [] Set.empty (0, 0) [] 1 [] [] 0 [introTextAnim] True False
 
 -- Gloss Functions
 
@@ -579,7 +641,7 @@ outsideBounds :: Bullet -> Bool
 outsideBounds bullet = let
   bX = bullet ^. bulletSprite . x
   bY = bullet ^. bulletSprite . y
-  in bX <= -800 || bX >= 800 || bY <= -800 || bY >= 800
+  in bX <= -300 || bX >= 300 || bY <= -300 || bY >= 300
 
 drawSprite :: Sprite -> Picture
 drawSprite (Sprite {_x, _y, _alpha, _color, _scale, _rotation, _picture}) =
@@ -594,8 +656,8 @@ draw w = let
   gameVis = w ^. gameVisible
   introVis = w ^. introVisible
   in case (introVis, gameVis) of
-    (True, _) -> Pictures []
-    (_, True) -> Pictures (map drawSprite (w ^. gameSprites))
+    (True, _) -> Pictures (map drawSprite (w ^. introSprites))
+    (_, True) -> Pictures (map drawSprite (gameSprites w))
 
 handleInput :: Event -> World -> World
 handleInput (EventKey k Down _ _) = execState $ do
@@ -625,6 +687,28 @@ reorient = execState $ do
 
 update :: Float -> World -> World
 update t = execState $ do
+  introVis <- use introVisible
+  gameVis <- use gameVisible
+  case (introVis, gameVis) of
+    (True, _) -> modify (updateIntro t)
+    (_, True) -> modify (updateGame t)
+
+updateIntro :: Float -> World -> World
+updateIntro t = execState $ do
+  keys <- use keysDown
+  if Set.member (Char 's') keys
+    then do
+      introVisible .= False
+      gameVisible .= True
+      introAnims .= []
+      introSprites .= []
+    else
+      return ()
+  -- update intro animations
+  runAnim introAnims t
+
+updateGame :: Float -> World -> World
+updateGame t = execState $ do
   keys <- use keysDown
   -- player movement
   if Set.member (Char 'w') keys || Set.member (Char 'z') keys
@@ -706,7 +790,7 @@ update t = execState $ do
       playerX <- use $ player . playerSprite . x
       playerY <- use $ player . playerSprite . y
       let (newOps, newBullets) = clearBullets (playerX, playerY) 80 (w ^. enemyBullets)
-      put (w { _particleAnims = playerBombAnim (playerX, playerY) : newOps ++ w ^. particleAnims, _enemyBullets = newBullets})
+      put (w { _particleAnims = playerBombAnim (playerX, playerY) : newOps ++ w ^. particleAnims, _enemyBullets = newBullets })
     else return ()
   -- update player animations
   runAnim playerAnims t
@@ -714,6 +798,12 @@ update t = execState $ do
   runAnim enemyAnims t
   -- update particle animations
   runAnim particleAnims t
+  -- end game if condition met
+  pHp <- use $ player . playerHp
+  enHp <- use $ enemy . enemyHp
+  if pHp <= 0 || enHp <= 0
+    then put initialWorld
+    else return ()
 
 runAnim :: (MonadState World m) =>
   Lens' World [Dsl (Ops World) ()] -> Float -> m ()
